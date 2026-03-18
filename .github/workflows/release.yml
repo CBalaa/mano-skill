@@ -15,7 +15,7 @@ jobs:
           python-version: '3.13'
       - run: pip install -r requirements.txt pyinstaller
       - run: pyinstaller fty-nb.spec
-      - run: tar -czf fty-nb-macos-arm64.tar.gz -C dist fty-nb
+      - run: tar -czf fty-nb-macos-arm64.tar.gz -C dist/fty-nb .
       - uses: actions/upload-artifact@v4
         with:
           name: fty-nb-macos-arm64
@@ -30,7 +30,7 @@ jobs:
           python-version: '3.13'
       - run: pip install -r requirements.txt pyinstaller
       - run: arch -x86_64 pyinstaller fty-nb.spec
-      - run: tar -czf fty-nb-macos-x86_64.tar.gz -C dist fty-nb
+      - run: tar -czf fty-nb-macos-x86_64.tar.gz -C dist/fty-nb .
       - uses: actions/upload-artifact@v4
         with:
           name: fty-nb-macos-x86_64
@@ -45,7 +45,7 @@ jobs:
           python-version: '3.13'
       - run: pip install -r requirements.txt pyinstaller
       - run: pyinstaller fty-nb.spec
-      - run: tar -czf fty-nb-linux-x86_64.tar.gz -C dist fty-nb
+      - run: tar -czf fty-nb-linux-x86_64.tar.gz -C dist/fty-nb .
       - uses: actions/upload-artifact@v4
         with:
           name: fty-nb-linux-x86_64
@@ -60,7 +60,7 @@ jobs:
           python-version: '3.13'
       - run: pip install -r requirements.txt pyinstaller
       - run: pyinstaller fty-nb.spec
-      - run: Compress-Archive -Path dist/fty-nb.exe -DestinationPath fty-nb-windows.zip
+      - run: Compress-Archive -Path dist/fty-nb/* -DestinationPath fty-nb-windows.zip
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
@@ -131,7 +131,8 @@ jobs:
             end
 
             def install
-              bin.install "fty-nb"
+              libexec.install Dir["*"]
+              bin.install_symlink libexec/"fty-nb"
             end
 
             test do

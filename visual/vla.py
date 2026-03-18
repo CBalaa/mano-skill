@@ -12,9 +12,6 @@
 import sys
 import argparse
 
-from visual.config.visual_config import BASE_URL
-from visual.view_model.task_view_model import TaskViewModel
-
 
 def main():
 
@@ -27,6 +24,9 @@ def main():
     if args.command != "run":
         print("Unsupported command. Must be 'run'.")
         return 1
+
+    from visual.config.visual_config import BASE_URL
+    from visual.view_model.task_view_model import TaskViewModel
 
     # Create ViewModel
     view_model = TaskViewModel()
