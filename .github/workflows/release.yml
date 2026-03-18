@@ -80,3 +80,70 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+
+  update-homebrew:
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          echo "macos_arm64=$(sha256sum artifacts/fty-nb-macos-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "macos_x86_64=$(sha256sum artifacts/fty-nb-macos-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "linux_x86_64=$(sha256sum artifacts/fty-nb-linux-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: HanningWang/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update formula
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          VERSION_NUM="${VERSION#v}"
+          mkdir -p Formula
+          cat > Formula/fty-nb.rb << EOF
+          class FtyNb < Formula
+            desc "VLA Desktop Automation Client"
+            homepage "https://github.com/HanningWang/mano-skill"
+            version "${VERSION_NUM}"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/HanningWang/mano-skill/releases/download/${VERSION}/fty-nb-macos-arm64.tar.gz"
+                sha256 "${{ steps.sha.outputs.macos_arm64 }}"
+              else
+                url "https://github.com/HanningWang/mano-skill/releases/download/${VERSION}/fty-nb-macos-x86_64.tar.gz"
+                sha256 "${{ steps.sha.outputs.macos_x86_64 }}"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/HanningWang/mano-skill/releases/download/${VERSION}/fty-nb-linux-x86_64.tar.gz"
+              sha256 "${{ steps.sha.outputs.linux_x86_64 }}"
+            end
+
+            def install
+              bin.install "fty-nb"
+            end
+
+            test do
+              assert_match "VLA", shell_output("#{bin}/fty-nb --help", 2)
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/fty-nb.rb
+          git commit -m "Update fty-nb to ${GITHUB_REF_NAME}"
+          git push
