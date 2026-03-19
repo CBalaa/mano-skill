@@ -1,4 +1,4 @@
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "https://mano.mininglamp.com"
 # Keep existing window/animation/text configurations unchanged
 WINDOW_CONFIG = {
     "WIDTH": 320,
@@ -50,7 +50,7 @@ TASK_STATUS = {
 
 # ========== New: Automation Business Configuration ==========
 AUTOMATION_CONFIG = {
-    "BASE_URL": "http://127.0.0.1:8000",
+    "BASE_URL": "https://mano.mininglamp.com",
     "DEVICE_FILE": "~/.myapp_device_id",
     "SCREEN_SCALE_WIDTH": 1280,   # Server screenshot width
     "SCREEN_SCALE_HEIGHT": 720,  # Server screenshot height
