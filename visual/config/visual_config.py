@@ -28,6 +28,7 @@ ANIMATION_CONFIG = {
 TEXT_CONSTANTS = {
     "WINDOW_TITLE": "VLA Task Monitor",
     "RUNNING_TEXT": "Running",
+    "EVALUATING_TEXT": "Evaluating",
     "DONE_TEXT": "Done ✅",
     "STOPPED_TEXT": "Stopped ⏹",
     "ERROR_TEXT": "Error ❌",
@@ -45,7 +46,8 @@ TASK_STATUS = {
     "COMPLETED": "completed",
     "STOPPED": "stopped",
     "ERROR": "error",
-    "CALL_USER": "call_user"  # New: requires user intervention status
+    "CALL_USER": "call_user",
+    "EVALUATING": "evaluating"
 }
 
 # ========== New: Automation Business Configuration ==========
@@ -62,5 +64,5 @@ AUTOMATION_CONFIG = {
     "HOTKEY_DELAY": 0.08,        # Hotkey delay
     "SESSION_TIMEOUT": 60,       # Session request timeout (seconds)
     "STEP_TIMEOUT": 600,         # Step request timeout (seconds)
-    "CLOSE_SESSION_TIMEOUT": 30  # Close session timeout (seconds)
+    "CLOSE_SESSION_TIMEOUT": 120  # Close session timeout (seconds), includes eval time
 }

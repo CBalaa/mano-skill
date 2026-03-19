@@ -19,6 +19,7 @@ class TaskOverlayView:
         self.root = None
         self._blink = True
         self._blink_job = None
+        self._blink_text = TEXT_CONSTANTS['RUNNING_TEXT']
         self._drag_start_x = 0
         self._drag_start_y = 0
 
@@ -342,6 +343,14 @@ class TaskOverlayView:
             )
             # Auto close after 5 seconds
             self.root.after(5000, self._auto_close)
+        elif status == TASK_STATUS["EVALUATING"]:
+            self.status_label.configure(text=f"{TEXT_CONSTANTS['EVALUATING_TEXT']}…")
+            self._start_blink(TEXT_CONSTANTS['EVALUATING_TEXT'])
+            self._switch_to_single_button()
+            self.stop_button.configure(
+                text=TEXT_CONSTANTS["STOP_BUTTON_TEXT"],
+                state="normal"
+            )
         elif status == TASK_STATUS["CALL_USER"]:
             # Core change: show two buttons in call_user state
             self.status_label.configure(text="Pending Confirmation")
@@ -366,12 +375,13 @@ class TaskOverlayView:
         self.continue_button.configure(state="normal")
 
     # ========== Animation Control ==========
-    def _start_blink(self):
+    def _start_blink(self, text=None):
         """Start title blinking"""
         if not self._ui_initialized:
             return
 
         self._blink = True
+        self._blink_text = text or TEXT_CONSTANTS['RUNNING_TEXT']
         self._blink_job = self.root.after(ANIMATION_CONFIG["BLINK_INTERVAL"], self._blink_title)
 
     def _stop_blink(self):
@@ -392,7 +402,7 @@ class TaskOverlayView:
 
         try:
             dots = "…" if self._blink else ""
-            self.status_label.configure(text=f"{TEXT_CONSTANTS['RUNNING_TEXT']}{dots}")
+            self.status_label.configure(text=f"{self._blink_text}{dots}")
             self._blink = not self._blink
             self._blink_job = self.root.after(ANIMATION_CONFIG["BLINK_INTERVAL"], self._blink_title)
         except Exception:

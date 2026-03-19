@@ -30,6 +30,8 @@ class TaskModel:
         # Business components
         self.executor: Optional[ComputerActionExecutor] = None
         self.server_url = AUTOMATION_CONFIG["BASE_URL"]
+        self.expected_result = None
+        self.eval_result = None
 
     # ========== Data Monitoring ==========
     def set_state_changed_callback(self, callback: Callable[[TaskState], None]):
@@ -42,10 +44,11 @@ class TaskModel:
             self._on_state_changed(self.state)
 
     # ========== Initialization Methods ==========
-    def init_task(self, task_name: str, server_url: Optional[str] = None):
+    def init_task(self, task_name: str, server_url: Optional[str] = None, expected_result: Optional[str] = None):
         """Initialize automation task"""
         # Basic configuration
         self.state.task_name = task_name
+        self.expected_result = expected_result
         self.state.status = TASK_STATUS["RUNNING"]
         self.state.is_running = True
         self.state.error_msg = None
@@ -116,6 +119,7 @@ class TaskModel:
 
     def _print_summary(self, final_status: str, error_msg: str = ""):
         """Print task summary to stdout for agent consumption"""
+        import json
         print(f"\n{'='*50}")
         print(f"Task: {self.state.task_name}")
         print(f"Status: {final_status}")
@@ -123,10 +127,18 @@ class TaskModel:
         if self.state.progress.action:
             print(f"Last action: {self.state.progress.action}")
         if self.state.progress.reasoning:
-            print(f"Last reasoning: {self.state.progress.reasoning}")
+            print(f"Last reasoning: {self.state.progress.reasoning}\n")
         if error_msg:
             print(f"Error: {error_msg}")
+        if self.eval_result:
+            print(f"Evaluation result: {json.dumps(self.eval_result, indent=2, ensure_ascii=False)}")
         print(f"{'='*50}\n")
+
+    def _mark_evaluating(self):
+        """Mark task as evaluating - only changes status label, keeps log text"""
+        self.state.status = TASK_STATUS["EVALUATING"]
+        print("Evaluating task result...")
+        self._notify_state_changed()
 
     def mark_call_user(self):
         """Mark task requires user intervention"""
@@ -163,6 +175,8 @@ class TaskModel:
         if not self.state.is_running:
             return
 
+        print(f"Expected result: {self.expected_result}")
+
         try:
             # 1. Create session
             self._create_session()
@@ -175,24 +189,33 @@ class TaskModel:
 
             # 3. Normal completion
             if self.state.is_running and self.state.status != TASK_STATUS["ERROR"]:
-                self.mark_completed()
+                if self.expected_result:
+                    self._mark_evaluating()
+                    self._close_session()
+                    self.mark_completed()
+                else:
+                    self.mark_completed()
+                    self._close_session()
+                return
 
         except Exception as e:
             self.mark_error(f"Task execution failed: {str(e)}")
-        finally:
-            # 4. Close session
-            self._close_session()
+        # Close session for error/stopped cases
+        self._close_session()
 
     def _create_session(self):
         """Create server session"""
         try:
+            body = {
+                "device_id": self.state.device_id,
+                "platform": self.state.platform_tag,
+                "task": self.state.task_name
+            }
+            if self.expected_result:
+                body["expected_result"] = self.expected_result
             resp = requests.post(
                 f"{self.server_url}/v1/sessions",
-                json={
-                    "device_id": self.state.device_id,
-                    "platform": self.state.platform_tag,
-                    "task": self.state.task_name
-                },
+                json=body,
                 timeout=AUTOMATION_CONFIG["SESSION_TIMEOUT"]
             )
             resp.raise_for_status()
@@ -252,7 +275,6 @@ class TaskModel:
 
             # 8. Handle terminal status
             if status == "DONE":
-                self.mark_completed()
                 break
             elif status == "FAIL":
                 self.mark_error("Server marked task as failed")
@@ -301,11 +323,13 @@ class TaskModel:
             return
 
         try:
-            requests.post(
+            resp = requests.post(
                 f"{self.server_url}/v1/sessions/{self.state.session_id}/close",
                 json={},
                 timeout=AUTOMATION_CONFIG["CLOSE_SESSION_TIMEOUT"]
             )
-            #self.update_progress(self.state.progress.step_idx, "Close session", "Clean up server session resources")
+            resp.raise_for_status()
+            data = resp.json()
+            self.eval_result = data.get("eval_result")
         except Exception as e:
             print(f"Failed to close session: {e}")

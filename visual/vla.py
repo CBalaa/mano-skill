@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description="VLA Desktop Automation Client")
     parser.add_argument("command", help="Command (must be 'run')")
     parser.add_argument("task", help="Task description to execute")
+    parser.add_argument("--expected-result", help="Expected result description for validation", default=None)
 
     args = parser.parse_args()
 
@@ -32,10 +33,10 @@ def main():
     view_model = TaskViewModel()
 
     # Initialize task
-    if not view_model.init_task(args.task, BASE_URL):
+    if not view_model.init_task(args.task, BASE_URL, expected_result=args.expected_result):
         print("Failed to initialize visualization overlay.")
         # Run task directly without UI
-        view_model.model.init_task(args.task, BASE_URL)
+        view_model.model.init_task(args.task, BASE_URL, expected_result=args.expected_result)
         view_model.model.run_automation_task()
         return 0 if view_model.model.state.status == "completed" else 1
 
