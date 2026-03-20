@@ -85,18 +85,12 @@ jobs:
     needs: [release]
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: Compute SHA256
+      - name: Download source tarball and compute SHA256
         id: sha
         run: |
-          echo "macos_arm64=$(sha256sum artifacts/fty-nb-macos-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "macos_x86_64=$(sha256sum artifacts/fty-nb-macos-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "linux_x86_64=$(sha256sum artifacts/fty-nb-linux-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          VERSION="${GITHUB_REF_NAME}"
+          curl -sL "https://github.com/HanningWang/mano-skill/archive/refs/tags/${VERSION}.tar.gz" -o source.tar.gz
+          echo "source=$(sha256sum source.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -109,37 +103,35 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           VERSION_NUM="${VERSION#v}"
           mkdir -p Formula
-          cat > Formula/fty-nb.rb << EOF
+          cat > Formula/fty-nb.rb << 'FORMULA_EOF'
           class FtyNb < Formula
             desc "VLA Desktop Automation Client"
             homepage "https://github.com/HanningWang/mano-skill"
-            version "${VERSION_NUM}"
+            url "https://github.com/HanningWang/mano-skill/archive/refs/tags/VERSION_PLACEHOLDER.tar.gz"
+            sha256 "SHA256_PLACEHOLDER"
+            version "VERSION_NUM_PLACEHOLDER"
 
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/HanningWang/mano-skill/releases/download/${VERSION}/fty-nb-macos-arm64.tar.gz"
-                sha256 "${{ steps.sha.outputs.macos_arm64 }}"
-              else
-                url "https://github.com/HanningWang/mano-skill/releases/download/${VERSION}/fty-nb-macos-x86_64.tar.gz"
-                sha256 "${{ steps.sha.outputs.macos_x86_64 }}"
-              end
-            end
-
-            on_linux do
-              url "https://github.com/HanningWang/mano-skill/releases/download/${VERSION}/fty-nb-linux-x86_64.tar.gz"
-              sha256 "${{ steps.sha.outputs.linux_x86_64 }}"
-            end
+            depends_on "python@3.13"
 
             def install
-              libexec.install Dir["*"]
-              bin.install_symlink libexec/"fty-nb"
+              venv = libexec/"venv"
+              system "python3.13", "-m", "venv", venv
+              system venv/"bin/pip", "install", "-r", "requirements.txt"
+              (venv/"src").install Dir["visual"]
+              (bin/"fty-nb").write <<~SH
+                #!/bin/bash
+                exec "#{venv}/bin/python3" "#{venv}/src/visual/vla.py" "$@"
+              SH
             end
 
             test do
-              assert_match "VLA", shell_output("#{bin}/fty-nb --help", 2)
+              assert_match "usage", shell_output("#{bin}/fty-nb --help", 2)
             end
           end
-          EOF
+          FORMULA_EOF
+          sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" Formula/fty-nb.rb
+          sed -i "s|VERSION_NUM_PLACEHOLDER|${VERSION_NUM}|g" Formula/fty-nb.rb
+          sed -i "s|SHA256_PLACEHOLDER|${{ steps.sha.outputs.source }}|g" Formula/fty-nb.rb
 
       - name: Commit and push
         run: |
