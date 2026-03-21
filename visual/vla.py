@@ -62,16 +62,14 @@ def run_task(task: str, expected_result: str = None):
             json=body,
             timeout=AUTOMATION_CONFIG["SESSION_TIMEOUT"]
         )
+        if resp.status_code == 409:
+            print(f"Error: Another task is already running on this device.")
+            print(f"Use 'fty-nb stop' to stop it first.")
+            return 1
+
         resp.raise_for_status()
         data = resp.json()
-        
-        # 2. If session is reused, exit immediately without UI
-        if data.get("reused", False):
-            print(f"Error: Another task is already running on this device.")
-            print(f"Session: {data['session_id']}")
-            print(f"Use 'python3 -m visual.vla stop' to stop it first.")
-            return 1
-        
+
         session_id = data["session_id"]
         print(f"Session created: {session_id}")
         

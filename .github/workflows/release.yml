@@ -112,6 +112,7 @@ jobs:
             version "VERSION_NUM_PLACEHOLDER"
 
             depends_on "python@3.13"
+            depends_on "python-tk@3.13"
 
             def install
               venv = libexec/"venv"

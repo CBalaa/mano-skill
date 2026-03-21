@@ -52,7 +52,7 @@ TASK_STATUS = {
 
 # ========== New: Automation Business Configuration ==========
 AUTOMATION_CONFIG = {
-    "BASE_URL": "https://mano.mininglamp.com",
+    "BASE_URL": BASE_URL,
     "DEVICE_FILE": "~/.myapp_device_id",
     "SCREEN_SCALE_WIDTH": 1280,   # Server screenshot width
     "SCREEN_SCALE_HEIGHT": 720,  # Server screenshot height

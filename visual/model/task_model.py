@@ -207,8 +207,8 @@ class TaskModel:
 
         except Exception as e:
             self.mark_error(f"Task execution failed: {str(e)}")
-        # Close session for error/stopped cases
-        self._close_session()
+        # Close session for error/stopped cases (skip eval)
+        self._close_session(skip_eval=True)
 
     def _create_session(self):
         """Create server session"""
@@ -225,13 +225,12 @@ class TaskModel:
                 json=body,
                 timeout=AUTOMATION_CONFIG["SESSION_TIMEOUT"]
             )
+            if resp.status_code == 409:
+                raise RuntimeError("Another task is already running on this device. Use 'fty-nb stop' to stop it first.")
+
             resp.raise_for_status()
             data = resp.json()
-            
-            # Check if session was reused (another task is already running)
-            if data.get("reused", False):
-                raise RuntimeError(f"Another task is already running on this device (session: {data['session_id']}). Use 'python3 -m visual.vla stop' to stop it first.")
-            
+
             self.state.session_id = data["session_id"]
             print(f"Session created: {self.state.session_id}")
 
@@ -329,14 +328,14 @@ class TaskModel:
 
             step_idx += 1
 
-    def _close_session(self):
+    def _close_session(self, skip_eval: bool = False):
         """Close server session"""
         if not self.state.session_id:
             return
 
         try:
             resp = requests.post(
-                f"{self.server_url}/v1/sessions/{self.state.session_id}/close",
+                f"{self.server_url}/v1/sessions/{self.state.session_id}/close?skip_eval={str(skip_eval).lower()}",
                 json={},
                 timeout=AUTOMATION_CONFIG["CLOSE_SESSION_TIMEOUT"]
             )
