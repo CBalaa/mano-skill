@@ -1,4 +1,5 @@
 from typing import Optional
+import platform
 import traceback
 
 import customtkinter as ctk
@@ -40,7 +41,16 @@ class TaskOverlayView:
     def _safe_init_ui(self):
         """Safely initialize UI with complete exception handling"""
         try:
-            # 1. Initialize main window
+            # 1. Save frontmost app before Tk steals focus (macOS)
+            self._previous_app = None
+            if platform.system() == "Darwin":
+                try:
+                    from AppKit import NSWorkspace
+                    self._previous_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+                except ImportError:
+                    pass
+
+            # 2. Initialize main window
             self.root = ctk.CTk()
             self.root.withdraw()  # Hide first, show after initialization
 
@@ -451,11 +461,15 @@ class TaskOverlayView:
 
         try:
             self.root.deiconify()  # Show window
-            self.root.lift()  # Bring to front
-            self.root.focus_force()  # Get focus
             self.root.attributes("-topmost", True)
             # Force refresh
             self.root.update()
+            # Restore focus to the previously active app
+            if self._previous_app:
+                try:
+                    self._previous_app.activateWithOptions_(0)
+                except Exception:
+                    pass
             # Periodically re-assert topmost
             self._keep_on_top()
             print("UI window displayed")
@@ -483,7 +497,6 @@ class TaskOverlayView:
         if not self._ui_initialized or not self.root:
             return
         try:
-            self.root.lift()
             self.root.attributes("-topmost", True)
             self.root.after(2000, self._keep_on_top)
         except Exception:

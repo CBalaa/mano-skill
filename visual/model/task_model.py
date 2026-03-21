@@ -11,7 +11,7 @@ from visual.config.visual_config import AUTOMATION_CONFIG, TASK_STATUS
 from visual.model.task_progress import TaskProgress
 from visual.model.task_state import TaskState
 from visual.computer.computer_use_util import screenshot_to_bytes, b64_png, get_or_create_device_id, \
-    focus_on_primary_screen, make_tool_result
+    make_tool_result
 
 
 class TaskModel:
@@ -71,9 +71,6 @@ class TaskModel:
 
         # Reset stop signal
         self.stop_event.clear()
-
-        # Focus on primary screen
-        focus_on_primary_screen()
 
         # Notify state change
         self._notify_state_changed()
