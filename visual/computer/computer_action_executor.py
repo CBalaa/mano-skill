@@ -229,27 +229,54 @@ class ComputerActionExecutor:
             y = primary["top"] + y
         return x, y
     
+    def _move_to_primary(self, app_name):
+        """Move app's front window to the primary screen (macOS only)"""
+        try:
+            script = (
+                f'tell application "System Events"\n'
+                f'    tell process "{app_name}"\n'
+                f'        set position of window 1 to {{0, 25}}\n'
+                f'    end tell\n'
+                f'end tell'
+            )
+            subprocess.run(["osascript", "-e", script], timeout=3, capture_output=True)
+        except Exception:
+            pass  # Best effort, don't fail the action
+
     def _open_app(self, app_name):
         """Cross-platform app launcher"""
         system = platform.system()
         try:
-            if system == "Darwin":  # macOS
+            if system == "Darwin":
                 subprocess.Popen(["open", "-a", app_name])
+                time.sleep(1)
+                self._move_to_primary(app_name)
             elif system == "Windows":
                 subprocess.Popen(f'start "" "{app_name}"', shell=True)
             else:
                 subprocess.Popen([app_name])
         except Exception as e:
             raise RuntimeError(f"Failed to open {app_name}: {e}")
-        
+
     def _open_url(self, url):
         system = platform.system()
         try:
             if system == "Darwin":
                 subprocess.Popen(["open", url])
+                time.sleep(1)
+                # Move the frontmost app's window to primary screen
+                script = (
+                    'tell application "System Events"\n'
+                    '    set frontApp to name of first application process whose frontmost is true\n'
+                    '    tell process frontApp\n'
+                    '        set position of window 1 to {0, 25}\n'
+                    '    end tell\n'
+                    'end tell'
+                )
+                subprocess.run(["osascript", "-e", script], timeout=3, capture_output=True)
             elif system == "Windows":
-                subprocess.Popen(f'start "" url', shell=True)
+                subprocess.Popen(f'start "" "{url}"', shell=True)
             else:
-                subprocess.Popen(["xdg-open", "https://example.com"])
+                subprocess.Popen(["xdg-open", url])
         except Exception as e:
-            raise RuntimeError(f"Failed to open {url}: {e}")    
+            raise RuntimeError(f"Failed to open {url}: {e}")
