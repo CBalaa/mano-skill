@@ -88,7 +88,7 @@ def stop_session():
         return 1
 
 
-def run_task(task: str, expected_result: str = None):
+def run_task(task: str, expected_result: str = None, minimize: bool = False):
     """Run an automation task"""
     from visual.config.visual_config import BASE_URL, AUTOMATION_CONFIG
     from visual.computer.computer_use_util import get_or_create_device_id
@@ -129,6 +129,10 @@ def run_task(task: str, expected_result: str = None):
     
     view_model = TaskViewModel()
 
+    # Start minimized if requested
+    if minimize and view_model.view and view_model.view._ui_initialized:
+        view_model.view.root.after(200, view_model.view._toggle_minimize)
+
     # Initialize task with existing session_id
     if not view_model.init_task(task, BASE_URL, expected_result=expected_result, session_id=session_id):
         print("Failed to initialize visualization overlay.")
@@ -151,6 +155,7 @@ def main():
     parser.add_argument("--expected-result", help="Expected result description for validation", default=None)
     parser.add_argument("--url", help="URL to capture (required for 'vision')", default=None)
     parser.add_argument("--expected", help="Expected content description (required for 'vision')", default=None)
+    parser.add_argument("--minimize", help="Start with minimized UI panel", action="store_true", default=False)
 
     args = parser.parse_args()
 
@@ -170,7 +175,7 @@ def main():
         if not args.task:
             print("Error: task is required for 'run' command")
             return 1
-        return run_task(args.task, args.expected_result)
+        return run_task(args.task, args.expected_result, minimize=args.minimize)
 
     return 1
 

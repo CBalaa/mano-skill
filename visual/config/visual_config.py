@@ -2,6 +2,8 @@ BASE_URL = "https://mano.mininglamp.com"
 # Keep existing window/animation/text configurations unchanged
 WINDOW_CONFIG = {
     "WIDTH": 320,
+    "MINIMIZED_WIDTH": 110,
+    "MINIMIZED_HEIGHT": 28,
     "MIN_HEIGHT": 240,
     "MAX_HEIGHT": 400,
     "MARGIN": 18,

@@ -23,6 +23,7 @@ class TaskOverlayView:
         self._blink_text = TEXT_CONSTANTS['RUNNING_TEXT']
         self._drag_start_x = 0
         self._drag_start_y = 0
+        self._minimized = False
 
         # Command binding (set by ViewModel)
         self.on_stop_command = None
@@ -134,27 +135,45 @@ class TaskOverlayView:
         )
         main_frame.pack(fill="both", expand=True, padx=2, pady=2)
 
-        # Top bar (status + step)
-        top_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        top_frame.pack(fill="x", padx=14, pady=(12, 0))
+        # Top bar (status + step + minimize)
+        self.top_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        self.top_frame.pack(fill="x", padx=14, pady=(12, 0))
 
         # Status label (Running/Done/Stopped/Error)
         self.status_label = ctk.CTkLabel(
-            top_frame,
+            self.top_frame,
             text=f"{TEXT_CONSTANTS['RUNNING_TEXT']}…",
             font=ctk.CTkFont(size=WINDOW_CONFIG["TITLE_FONT_SIZE"]),
             text_color=WINDOW_CONFIG["TEXT_COLOR"]
         )
         self.status_label.pack(side="left")
 
+        # Minimize/expand button
+        self.minimize_button = ctk.CTkButton(
+            self.top_frame,
+            text="−",
+            width=20, height=18,
+            font=ctk.CTkFont(size=13),
+            fg_color="transparent",
+            hover_color="#444444",
+            text_color=WINDOW_CONFIG["TEXT_COLOR"],
+            corner_radius=4,
+            border_spacing=0,
+            command=self._toggle_minimize
+        )
+        self.minimize_button.pack(side="right", padx=(4, 0))
+
         # Step label
         self.step_label = ctk.CTkLabel(
-            top_frame,
+            self.top_frame,
             text=f"{TEXT_CONSTANTS['STEP_PREFIX']}0",
             font=ctk.CTkFont(size=WINDOW_CONFIG["TITLE_FONT_SIZE"]),
             text_color=WINDOW_CONFIG["TEXT_COLOR"]
         )
         self.step_label.pack(side="right")
+
+        # Store reference to main_frame for minimize
+        self.main_frame = main_frame
 
         # Task name textbox (scrollable with max height)
         self.task_name_label = ctk.CTkTextbox(
@@ -230,6 +249,60 @@ class TaskOverlayView:
             except Exception as e:
                 print(f"Failed to execute continue command: {e}")
 
+    def _toggle_minimize(self):
+        """Toggle between minimized and expanded view"""
+        if not self._ui_initialized or not self.root:
+            return
+
+        self._minimized = not self._minimized
+
+        if self._minimized:
+            # Save expanded position for restore
+            self._expanded_x = self.root.winfo_x()
+            self._expanded_y = self.root.winfo_y()
+            # Hide detail widgets
+            self.task_name_label.pack_forget()
+            self.log_text.pack_forget()
+            self.button_frame.pack_forget()
+            # Compact top bar: reduce padding, center content vertically
+            self.step_label.pack_forget()
+            self.minimize_button.pack_forget()
+            self.status_label.pack_forget()
+            self.top_frame.pack_configure(padx=6, pady=(2, 2))
+            self.status_label.pack(side="left", padx=(2, 2))
+            self.minimize_button.configure(text="+")
+            self.minimize_button.pack(side="left", padx=(0, 2))
+            # Move to bottom-right corner
+            try:
+                screen_width = self.root.winfo_screenwidth()
+                screen_height = self.root.winfo_screenheight()
+                x = screen_width - WINDOW_CONFIG["MINIMIZED_WIDTH"] - WINDOW_CONFIG["MARGIN"]
+                y = screen_height - WINDOW_CONFIG["MINIMIZED_HEIGHT"] - WINDOW_CONFIG["MARGIN"] - 50
+            except Exception:
+                x = self._expanded_x
+                y = self._expanded_y
+            self.root.geometry(
+                f"{WINDOW_CONFIG['MINIMIZED_WIDTH']}x{WINDOW_CONFIG['MINIMIZED_HEIGHT']}+{x}+{y}"
+            )
+        else:
+            # Restore top bar to original layout and padding
+            self.status_label.pack_forget()
+            self.minimize_button.pack_forget()
+            self.top_frame.pack_configure(padx=14, pady=(12, 0))
+            self.status_label.pack(side="left")
+            self.minimize_button.configure(text="−")
+            self.minimize_button.pack(side="right", padx=(4, 0))
+            self.step_label.pack(side="right")
+            # Restore detail widgets
+            self.task_name_label.pack(fill="x", padx=14, pady=(8, 0))
+            self.log_text.pack(fill="both", expand=True, padx=14, pady=(8, 0))
+            self.button_frame.pack(fill="x", padx=14, pady=(8, 12))
+            # Restore to saved expanded position
+            x = getattr(self, '_expanded_x', self.root.winfo_x())
+            y = getattr(self, '_expanded_y', self.root.winfo_y())
+            self.root.geometry(f"{WINDOW_CONFIG['WIDTH']}x{WINDOW_CONFIG['MIN_HEIGHT']}+{x}+{y}")
+            self.root.after(ANIMATION_CONFIG["HEIGHT_ADJUST_DELAY"], self._safe_adjust_window_height)
+
     def _setup_dragging(self):
         """Window dragging functionality"""
         if not self.root:
@@ -253,7 +326,7 @@ class TaskOverlayView:
                 pass
 
         # Bind dragging events to title area
-        for widget in (self.status_label, self.step_label):
+        for widget in (self.status_label, self.step_label, self.minimize_button):
             widget.bind("<Button-1>", start_drag)
             widget.bind("<B1-Motion>", do_drag)
 
@@ -432,7 +505,7 @@ class TaskOverlayView:
     # ========== Window Adjustment (Safe Version) ==========
     def _safe_adjust_window_height(self):
         """Safe adaptive window height (core fix)"""
-        if not self._ui_initialized or not self.root:
+        if not self._ui_initialized or not self.root or self._minimized:
             return
 
         try:

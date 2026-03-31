@@ -174,6 +174,12 @@ class TaskViewModel:
             ctk.set_appearance_mode("dark")
             ctk.set_default_color_theme("dark-blue")
 
+            # Wire minimize callback from model to view (only minimize, never expand)
+            def _minimize_if_needed():
+                if not self.view._minimized:
+                    self.view._toggle_minimize()
+            self.model.on_minimize_panel = lambda: self.view.root.after(0, _minimize_if_needed)
+
             # Initialize Model
             self.model.init_task(task_name, server_url, expected_result=expected_result, session_id=session_id)
 

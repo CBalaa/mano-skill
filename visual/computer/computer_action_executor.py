@@ -14,7 +14,8 @@ from visual.config.visual_config import AUTOMATION_CONFIG
 class ComputerActionExecutor:
     """Automation action executor"""
 
-    def __init__(self):
+    def __init__(self, on_minimize_panel=None):
+        self.on_minimize_panel = on_minimize_panel
         with mss.mss() as sct:
             monitor = sct.monitors[1]
             actual_width = monitor["width"]
@@ -36,7 +37,11 @@ class ComputerActionExecutor:
         start_time = time.time()
 
         try:
-            if tool_name == "open_app":
+            if tool_name == "minimize_panel":
+                if self.on_minimize_panel:
+                    self.on_minimize_panel()
+                msg = "panel minimized"
+            elif tool_name == "open_app":
                 app_name = tool_input.get("app_name", "")
                 if app_name:
                     self._open_app(app_name)

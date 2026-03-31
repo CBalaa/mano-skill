@@ -28,6 +28,7 @@ class TaskModel:
         self._on_state_changed: Optional[Callable[[TaskState], None]] = None
 
         # Business components
+        self.on_minimize_panel: Optional[Callable] = None
         self.executor: Optional[ComputerActionExecutor] = None
         self.server_url = AUTOMATION_CONFIG["BASE_URL"]
         self.expected_result = None
@@ -67,7 +68,7 @@ class TaskModel:
             self.server_url = server_url
 
         # Initialize executor
-        self.executor = ComputerActionExecutor()
+        self.executor = ComputerActionExecutor(on_minimize_panel=self.on_minimize_panel)
 
         # Reset stop signal
         self.stop_event.clear()
