@@ -8,6 +8,7 @@ if not defined REMOTE_PORT set "REMOTE_PORT=8000"
 if not defined CONDA_ENV set "CONDA_ENV=mano-skill-dev"
 if not defined CLIENT_SCRIPT set "CLIENT_SCRIPT=visual\vla.py"
 if not defined CLIENT_FLAGS set "CLIENT_FLAGS=--headless"
+if not defined PYTHON_EXE if exist "%LocalAppData%\Programs\Python\Python311\python.exe" set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python311\python.exe"
 
 set "SERVER_URL=http://127.0.0.1:%LOCAL_PORT%"
 
@@ -37,7 +38,65 @@ echo   REMOTE_PORT=8000
 echo   CONDA_ENV=mano-skill-dev
 echo   CLIENT_SCRIPT=visual\vla.py
 echo   CLIENT_FLAGS=--headless
+echo   PYTHON_EXE=%LocalAppData%\Programs\Python\Python311\python.exe
 exit /b 1
+
+:resolve_python_runner
+if defined PYTHON_EXE (
+    if exist "%PYTHON_EXE%" (
+        set "PYTHON_RUNNER_KIND=exe"
+        exit /b 0
+    )
+    echo Configured PYTHON_EXE does not exist: %PYTHON_EXE%
+)
+
+where conda >nul 2>nul
+if not errorlevel 1 (
+    set "PYTHON_RUNNER_KIND=conda"
+    exit /b 0
+)
+
+where python >nul 2>nul
+if not errorlevel 1 (
+    set "PYTHON_RUNNER_KIND=python"
+    exit /b 0
+)
+
+where py >nul 2>nul
+if not errorlevel 1 (
+    set "PYTHON_RUNNER_KIND=py"
+    exit /b 0
+)
+
+echo Could not find a usable Python runtime.
+echo Set PYTHON_EXE to your python.exe, or put conda/python/py on PATH.
+exit /b 1
+
+:run_client
+call :resolve_python_runner
+if errorlevel 1 exit /b 1
+
+if /I "%PYTHON_RUNNER_KIND%"=="exe" (
+    echo Using Python: %PYTHON_EXE%
+    "%PYTHON_EXE%" %CLIENT_SCRIPT% %*
+    exit /b %errorlevel%
+)
+
+if /I "%PYTHON_RUNNER_KIND%"=="conda" (
+    echo Using Python via conda env: %CONDA_ENV%
+    conda run -n %CONDA_ENV% python %CLIENT_SCRIPT% %*
+    exit /b %errorlevel%
+)
+
+if /I "%PYTHON_RUNNER_KIND%"=="python" (
+    echo Using Python from PATH
+    python %CLIENT_SCRIPT% %*
+    exit /b %errorlevel%
+)
+
+echo Using Python launcher: py -3
+py -3 %CLIENT_SCRIPT% %*
+exit /b %errorlevel%
 
 :ensure_tunnel
 powershell -NoProfile -Command "$u='%SERVER_URL%/healthz'; try { $r = Invoke-RestMethod $u -TimeoutSec 2; if ($r.ok) { exit 0 } } catch {}; exit 1" >nul 2>nul
@@ -72,14 +131,14 @@ call :ensure_tunnel
 if errorlevel 1 exit /b 1
 
 echo Running task via %SERVER_URL%
-call conda run -n %CONDA_ENV% python %CLIENT_SCRIPT% run "%TASK%" --server-url %SERVER_URL% %CLIENT_FLAGS%
+call :run_client run "%TASK%" --server-url %SERVER_URL% %CLIENT_FLAGS%
 exit /b %errorlevel%
 
 :stop
 call :ensure_tunnel
 if errorlevel 1 exit /b 1
 
-call conda run -n %CONDA_ENV% python %CLIENT_SCRIPT% stop --server-url %SERVER_URL%
+call :run_client stop --server-url %SERVER_URL%
 exit /b %errorlevel%
 
 :status

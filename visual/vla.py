@@ -12,9 +12,17 @@
 import sys
 import platform
 import argparse
+from pathlib import Path
 from typing import Optional
 
 import requests
+
+
+if __package__ in (None, ""):
+    repo_root = Path(__file__).resolve().parent.parent
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
 
 
 def _close_session_quietly(server_url: str, session_id: str):
