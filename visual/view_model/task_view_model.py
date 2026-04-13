@@ -1,24 +1,30 @@
 import threading
 from typing import Optional
-import requests  # New: import requests library for API calls
+import requests
 
 from visual.config.visual_config import ANIMATION_CONFIG, TASK_STATUS, AUTOMATION_CONFIG
 from visual.model.task_model import TaskModel
-from visual.view.task_overlay_view import TaskOverlayView
 
 
 class TaskViewModel:
     """ViewModel layer: connects Model and View"""
 
-    def __init__(self):
+    def __init__(self, overlay_enabled: bool = True):
         # Initialize Model and View
         self.model = TaskModel()
-        self.view = TaskOverlayView()
+        self.model.overlay_enabled = overlay_enabled
+        self.overlay_enabled = overlay_enabled
+        self.view = None
+        self._view_init_error = None
+
+        if self.overlay_enabled:
+            self._init_view()
 
         # Bind View commands to ViewModel
-        self.view.on_stop_command = self.on_stop_command
-        self.view.on_close_command = self.on_close_command
-        self.view.on_continue_command = self.on_continue_command  # Bind agree and continue command
+        if self.view:
+            self.view.on_stop_command = self.on_stop_command
+            self.view.on_close_command = self.on_close_command
+            self.view.on_continue_command = self.on_continue_command
 
         # Bind Model state changes to View updates
         self.model.set_state_changed_callback(self.on_model_state_changed)
@@ -27,26 +33,44 @@ class TaskViewModel:
         self._task_thread = None
         self._is_running = False
 
+    def _init_view(self):
+        """Lazily create the overlay so headless mode can skip UI dependencies."""
+        try:
+            from visual.view.task_overlay_view import TaskOverlayView
+            self.view = TaskOverlayView()
+        except ImportError as exc:
+            self._view_init_error = exc
+            self.overlay_enabled = False
+            self.model.overlay_enabled = False
+            self.view = None
+
     # ========== Model State Change Callback ==========
     def on_model_state_changed(self, task_state):
         """Update View when Model state changes"""
-        self.view.root.after(0, lambda: self.view.update_task_state(task_state))
+        if self.view and self.view.root:
+            self.view.root.after(0, lambda: self.view.update_task_state(task_state))
+        elif task_state.status == TASK_STATUS["CALL_USER"]:
+            print(f"Waiting for user confirmation on session {task_state.session_id}...")
 
     # ========== View Command Handling ==========
     def on_stop_command(self):
         """Handle stop command"""
         if self._is_running:
-            self.view.root.after(0, lambda: self.view.stop_button.configure(
-                text="Stopping…",
-                state="disabled"
-            ))
-            self.view.root.after(ANIMATION_CONFIG["STOP_DELAY"], self.model.stop_task)
+            if self.view and self.view.root:
+                self.view.root.after(0, lambda: self.view.stop_button.configure(
+                    text="Stopping…",
+                    state="disabled"
+                ))
+                self.view.root.after(ANIMATION_CONFIG["STOP_DELAY"], self.model.stop_task)
+            else:
+                self.model.stop_task()
 
     def on_close_command(self):
         """Handle close command"""
         self._is_running = False
         self.model.stop_task()
-        self.view.close()
+        if self.view:
+            self.view.close()
 
     # ========== Core Change: Ensure API call succeeds before resuming thread ==========
     def on_continue_command(self):
@@ -54,9 +78,10 @@ class TaskViewModel:
         # Quick failure: task not running, return directly
         if not self._is_running:
             print("❌ Task not running, cannot continue")
-            self.view.root.after(0, lambda: self.view.continue_button.configure(
-                text="Agree and Continue", state="normal"
-            ))
+            if self.view and self.view.root:
+                self.view.root.after(0, lambda: self.view.continue_button.configure(
+                    text="Agree and Continue", state="normal"
+                ))
             return
 
         # 1. Validate required parameters
@@ -64,24 +89,26 @@ class TaskViewModel:
         if not session_id:
             error_msg = "Session ID not obtained, cannot continue task"
             print(f"❌ {error_msg}")
-            self.view.root.after(0, lambda: [
-                self.view.continue_button.configure(text="Agree and Continue", state="normal"),
-                self.view.log_text.insert("1.0", f"❌ Error: {error_msg}\n{self.view.log_text.get('1.0', 'end')}")
-            ])
+            if self.view and self.view.root:
+                self.view.root.after(0, lambda: [
+                    self.view.continue_button.configure(text="Agree and Continue", state="normal"),
+                    self.view.log_text.insert("1.0", f"❌ Error: {error_msg}\n{self.view.log_text.get('1.0', 'end')}")
+                ])
             return
 
         # Define core logic for API call (extracted as internal function for exception handling)
         def call_go_no_api():
             try:
                 # 2. Update UI button state (prevent duplicate clicks)
-                self.view.root.after(0, lambda: [
-                    self.view.continue_button.configure(text="Submitting confirmation...", state="disabled"),
-                    self.view.stop_button.configure(state="disabled"),
-                    self.view.log_text.insert(
-                        "1.0",
-                        f"🔄 Submitting user confirmation, session ID: {session_id}\n{self.view.log_text.get('1.0', 'end')}"
-                    )
-                ])
+                if self.view and self.view.root:
+                    self.view.root.after(0, lambda: [
+                        self.view.continue_button.configure(text="Submitting confirmation...", state="disabled"),
+                        self.view.stop_button.configure(state="disabled"),
+                        self.view.log_text.insert(
+                            "1.0",
+                            f"🔄 Submitting user confirmation, session ID: {session_id}\n{self.view.log_text.get('1.0', 'end')}"
+                        )
+                    ])
 
                 # 3. [First step] Call go_no API (prioritize ensuring server state update)
                 server_url = self.model.server_url or AUTOMATION_CONFIG["BASE_URL"]
@@ -113,14 +140,15 @@ class TaskViewModel:
                 self.on_model_state_changed(self.model.state)
 
                 # 8. Update UI log and status
-                self.view.root.after(0, lambda: [
-                    self.view.log_text.insert(
-                        "1.0",
-                        f"User confirmed, session {session_id} resumed\n{self.view.log_text.get('1.0', 'end')}"
-                    ),
-                    self.view.status_label.configure(text="Resuming..."),
-                    self.view.stop_button.configure(state="normal")
-                ])
+                if self.view and self.view.root:
+                    self.view.root.after(0, lambda: [
+                        self.view.log_text.insert(
+                            "1.0",
+                            f"User confirmed, session {session_id} resumed\n{self.view.log_text.get('1.0', 'end')}"
+                        ),
+                        self.view.status_label.configure(text="Resuming..."),
+                        self.view.stop_button.configure(state="normal")
+                    ])
 
                 print(f"Client thread resumed, session {session_id} continuing")
 
@@ -142,16 +170,21 @@ class TaskViewModel:
     # ========== New: Unified Error Handling Method ==========
     def _handle_continue_error(self, error_msg):
         """Unified handling of agree and continue error scenarios"""
-        self.view.root.after(0, lambda: [
-            self.view.continue_button.configure(text="Agree and Continue", state="normal"),
-            self.view.stop_button.configure(state="normal"),
-            self.view.log_text.insert("1.0", f"❌ {error_msg}\n{self.view.log_text.get('1.0', 'end')}"),
-            self.view.status_label.configure(text="Confirmation failed")
-        ])
+        if self.view and self.view.root:
+            self.view.root.after(0, lambda: [
+                self.view.continue_button.configure(text="Agree and Continue", state="normal"),
+                self.view.stop_button.configure(state="normal"),
+                self.view.log_text.insert("1.0", f"❌ {error_msg}\n{self.view.log_text.get('1.0', 'end')}"),
+                self.view.status_label.configure(text="Confirmation failed")
+            ])
+        else:
+            print(error_msg)
 
     # ========== Thread Polling Wrapper (Reusable Logic) ==========
     def _start_thread_polling(self):
         """Start thread state polling (extracted for reuse)"""
+        if not self.view or not self.view.root:
+            return
 
         def poll_thread():
             if self._task_thread and self._task_thread.is_alive():
@@ -170,26 +203,38 @@ class TaskViewModel:
     def init_task(self, task_name: str, server_url: Optional[str] = None, expected_result: Optional[str] = None, session_id: Optional[str] = None) -> bool:
         """Initialize automation task"""
         try:
-            import customtkinter as ctk
-            ctk.set_appearance_mode("dark")
-            ctk.set_default_color_theme("dark-blue")
+            if self.overlay_enabled and self.view:
+                import customtkinter as ctk
+                ctk.set_appearance_mode("dark")
+                ctk.set_default_color_theme("dark-blue")
 
-            # Wire minimize callback from model to view (only minimize, never expand)
-            def _minimize_if_needed():
-                if not self.view._minimized:
-                    self.view._toggle_minimize()
-            self.model.on_minimize_panel = lambda: self.view.root.after(0, _minimize_if_needed)
+                # Wire minimize callback from model to view (only minimize, never expand)
+                def _minimize_if_needed():
+                    if not self.view._minimized:
+                        self.view._toggle_minimize()
 
-            # Initialize Model
+                self.model.on_minimize_panel = lambda: self.view.root.after(0, _minimize_if_needed)
+            else:
+                self.model.on_minimize_panel = None
+
             self.model.init_task(task_name, server_url, expected_result=expected_result, session_id=session_id)
 
-            # Initialize View
-            self.view.show()
+            if self.overlay_enabled and self.view:
+                self.view.show()
+            elif self._view_init_error:
+                print(f"Overlay unavailable, continuing headless: {self._view_init_error}")
+
             self._is_running = True
             return True
         except ImportError:
-            print("CustomTkinter not installed, skipping visualization")
-            return False
+            print("CustomTkinter not installed, continuing headless")
+            self.overlay_enabled = False
+            self.model.overlay_enabled = False
+            self.view = None
+            self.model.on_minimize_panel = None
+            self.model.init_task(task_name, server_url, expected_result=expected_result, session_id=session_id)
+            self._is_running = True
+            return True
         except Exception as e:
             print(f"Failed to initialize task: {e}")
             import traceback
@@ -200,6 +245,13 @@ class TaskViewModel:
         """Run automation task"""
         if not self._is_running:
             return False
+
+        if not self.overlay_enabled or not self.view:
+            try:
+                self.model.run_automation_task()
+            finally:
+                self._is_running = False
+            return self.model.state.status == TASK_STATUS["COMPLETED"]
 
         # Start Model's automation task
         def worker():
@@ -226,4 +278,5 @@ class TaskViewModel:
 
     def close(self):
         """Close ViewModel"""
-        self.on_close_command()
+        if self.view:
+            self.on_close_command()

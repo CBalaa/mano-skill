@@ -33,6 +33,7 @@ class TaskModel:
         self.server_url = AUTOMATION_CONFIG["BASE_URL"]
         self.expected_result = None
         self.eval_result = None
+        self.overlay_enabled = True
 
     # ========== Data Monitoring ==========
     def set_state_changed_callback(self, callback: Callable[[TaskState], None]):
@@ -160,8 +161,15 @@ class TaskModel:
         self.state.status = TASK_STATUS["CALL_USER"]
         self._notify_state_changed()
         self.pause_task()
-        self.pause_event.wait()
+        print(
+            f"Session {self.state.session_id} requires confirmation. "
+            f"Approve it with POST {self.server_url}/v1/sessions/{self.state.session_id}/go_no"
+        )
+        self._wait_for_resume()
+        if self.stop_event.is_set() or not self.state.is_running:
+            return
         self.state.status = TASK_STATUS["RUNNING"]
+        self._notify_state_changed()
 
     # ========== Current Thread Calls: Control Task Thread ==========
 
@@ -180,9 +188,49 @@ class TaskModel:
 
     def resume_task(self):
         """Current thread call: resume task"""
-        self.pause_event.set()  # Clear pause signal
+        if self.pause_event:
+            self.pause_event.set()  # Clear pause signal
         self._notify_state_changed()
         print(f"[Current thread-{threading.current_thread().name}] Send resume signal")
+
+    def _wait_for_resume(self):
+        """Wait for local UI resume or remote session state change."""
+        poll_interval = AUTOMATION_CONFIG["CALL_USER_POLL_INTERVAL"]
+        while self.state.is_running and not self.stop_event.is_set():
+            if self.pause_event and self.pause_event.wait(timeout=poll_interval):
+                return
+
+            if self.overlay_enabled:
+                continue
+
+            session_status = self._fetch_remote_session_status()
+            if session_status == "RUNNING":
+                self.resume_task()
+                return
+            if session_status == "STOP":
+                self.mark_stopped()
+                return
+
+    def _fetch_remote_session_status(self) -> Optional[str]:
+        """Poll orchestrator status for headless resume handling."""
+        if not self.state.session_id:
+            return None
+
+        try:
+            resp = requests.get(
+                f"{self.server_url}/v1/sessions/{self.state.session_id}",
+                headers=API_HEADERS,
+                timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            return None
+
+        status = (data.get("status") or "").upper()
+        if status in {"RUNNING", "STOP"}:
+            return status
+        return None
 
     # ========== Core Business Logic: Run Automation Task ==========
     def run_automation_task(self):

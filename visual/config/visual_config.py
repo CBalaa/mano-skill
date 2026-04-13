@@ -1,6 +1,22 @@
+import os
 import platform as _platform
+from typing import Optional
 
-BASE_URL = "https://mano.mininglamp.com"
+DEFAULT_LOCAL_SERVER_URL = "http://127.0.0.1:8000"
+
+
+def resolve_server_url(server_url: Optional[str] = None) -> str:
+    """Resolve the orchestrator URL from CLI override, env var, or local default."""
+    value = (
+        server_url
+        or os.getenv("MANO_CUA_SERVER_URL")
+        or os.getenv("MANO_SERVER_URL")
+        or DEFAULT_LOCAL_SERVER_URL
+    )
+    return value.rstrip("/")
+
+
+BASE_URL = resolve_server_url()
 
 # Client version — keep in sync with brew formula
 CLIENT_VERSION = "1.0.5"
@@ -87,5 +103,6 @@ AUTOMATION_CONFIG = {
     "HOTKEY_DELAY": 0.08,        # Hotkey delay
     "SESSION_TIMEOUT": 60,       # Session request timeout (seconds)
     "STEP_TIMEOUT": 600,         # Step request timeout (seconds)
-    "CLOSE_SESSION_TIMEOUT": 120  # Close session timeout (seconds), includes eval time
+    "CLOSE_SESSION_TIMEOUT": 120,  # Close session timeout (seconds), includes eval time
+    "CALL_USER_POLL_INTERVAL": 2,  # Polling interval when waiting without overlay
 }
