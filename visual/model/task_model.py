@@ -7,7 +7,7 @@ from typing import Optional, Callable, Dict, Any, List
 import requests
 
 from visual.computer.computer_action_executor import ComputerActionExecutor
-from visual.config.visual_config import AUTOMATION_CONFIG, TASK_STATUS
+from visual.config.visual_config import AUTOMATION_CONFIG, TASK_STATUS, API_HEADERS
 from visual.model.task_progress import TaskProgress
 from visual.model.task_state import TaskState
 from visual.computer.computer_use_util import screenshot_to_bytes, get_or_create_device_id, \
@@ -234,6 +234,7 @@ class TaskModel:
             resp = requests.post(
                 f"{self.server_url}/v1/sessions",
                 json=body,
+                headers=API_HEADERS,
                 timeout=AUTOMATION_CONFIG["SESSION_TIMEOUT"]
             )
             if resp.status_code == 409:

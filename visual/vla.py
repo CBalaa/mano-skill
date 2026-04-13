@@ -90,7 +90,7 @@ def stop_session():
 
 def run_task(task: str, expected_result: str = None, minimize: bool = False):
     """Run an automation task"""
-    from visual.config.visual_config import BASE_URL, AUTOMATION_CONFIG
+    from visual.config.visual_config import BASE_URL, AUTOMATION_CONFIG, API_HEADERS
     from visual.computer.computer_use_util import get_or_create_device_id
     
     # 1. Try to create session BEFORE initializing UI
@@ -107,6 +107,7 @@ def run_task(task: str, expected_result: str = None, minimize: bool = False):
         resp = requests.post(
             f"{BASE_URL}/v1/sessions",
             json=body,
+            headers=API_HEADERS,
             timeout=AUTOMATION_CONFIG["SESSION_TIMEOUT"]
         )
         if resp.status_code == 409:

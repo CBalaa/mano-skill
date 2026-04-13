@@ -1,4 +1,25 @@
+import platform as _platform
+
 BASE_URL = "https://mano.mininglamp.com"
+
+# Client version — keep in sync with brew formula
+CLIENT_VERSION = "1.0.5"
+
+def build_user_agent() -> str:
+    """Build User-Agent: mano-cua/1.0.5 (macOS 26.3; arm64) Python/3.13.5"""
+    os_ver = _platform.mac_ver()[0] or _platform.release()
+    arch = _platform.machine()
+    py_ver = _platform.python_version()
+    system = _platform.system()
+    if system == "Darwin":
+        os_tag = f"macOS {os_ver}"
+    elif system == "Windows":
+        os_tag = f"Windows NT {os_ver}"
+    else:
+        os_tag = f"{system} {os_ver}"
+    return f"mano-cua/{CLIENT_VERSION} ({os_tag}; {arch}) Python/{py_ver}"
+
+API_HEADERS = {"User-Agent": build_user_agent()}
 # Keep existing window/animation/text configurations unchanged
 WINDOW_CONFIG = {
     "WIDTH": 320,
