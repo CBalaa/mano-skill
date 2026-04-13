@@ -18,15 +18,19 @@ class SessionRecord:
     platform: str
     task: str
     expected_result: Optional[str]
+    manual_mode: bool = False
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     last_screenshot_b64: Optional[str] = None
+    last_screenshot_at: Optional[datetime] = None
     last_tool_results: List[Dict[str, Any]] = field(default_factory=list)
+    manual_action_batches: List[List[Dict[str, Any]]] = field(default_factory=list)
     planner_state: Dict[str, Any] = field(default_factory=dict)
     status: str = "RUNNING"
     awaiting_confirmation: bool = False
     stop_requested: bool = False
     closed: bool = False
+    manual_done: bool = False
     step_count: int = 0
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
@@ -52,13 +56,15 @@ class SessionStore:
                 if active_session and not active_session.closed:
                     raise SessionConflictError(active_session_id)
 
+            manual_mode, normalized_task = _extract_manual_mode(request.task)
             session_id = str(uuid.uuid4())
             session = SessionRecord(
                 session_id=session_id,
                 device_id=request.device_id,
                 platform=request.platform,
-                task=request.task,
+                task=normalized_task,
                 expected_result=request.expected_result,
+                manual_mode=manual_mode,
             )
             self._sessions[session_id] = session
             self._active_by_device[request.device_id] = session_id
@@ -106,5 +112,51 @@ class SessionStore:
             for item in tool_results:
                 if item.include_screenshot and item.screenshot_b64:
                     session.last_screenshot_b64 = item.screenshot_b64
+                    session.last_screenshot_at = utc_now()
                     break
             session.touch()
+
+    def enqueue_actions(
+        self,
+        session_id: str,
+        actions: List[Dict[str, Any]],
+        replace_queue: bool = False,
+    ) -> Optional[SessionRecord]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return None
+            with session.lock:
+                session.manual_mode = True
+                session.manual_done = False
+                if replace_queue:
+                    session.manual_action_batches.clear()
+                session.manual_action_batches.append(actions)
+                session.status = "RUNNING"
+                session.touch()
+            return session
+
+    def finish_session(self, session_id: str) -> Optional[SessionRecord]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return None
+            with session.lock:
+                session.manual_mode = True
+                session.manual_done = True
+                session.awaiting_confirmation = False
+                session.manual_action_batches.clear()
+                session.status = "DONE"
+                session.touch()
+            return session
+
+
+def _extract_manual_mode(task: str) -> tuple[bool, str]:
+    stripped = task.strip()
+    prefixes = ("[manual]", "manual:", "[手动]", "手动:")
+    lowered = stripped.casefold()
+    for prefix in prefixes:
+        if lowered.startswith(prefix.casefold()):
+            normalized = stripped[len(prefix):].strip()
+            return True, normalized or "Manual control session"
+    return False, task

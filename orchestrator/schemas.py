@@ -36,6 +36,11 @@ class ActionModel(BaseModel):
     input: Dict[str, Any] = Field(default_factory=dict)
 
 
+class QueuedActionModel(BaseModel):
+    name: str
+    input: Dict[str, Any] = Field(default_factory=dict)
+
+
 class StepResponse(BaseModel):
     status: str
     reasoning: str = ""
@@ -69,5 +74,33 @@ class SessionStatusResponse(BaseModel):
     awaiting_confirmation: bool = False
     stop_requested: bool = False
     closed: bool = False
+    manual_mode: bool = False
+    pending_action_batches: int = 0
     has_screenshot: bool = False
     task: str
+
+
+class EnqueueActionsRequest(BaseModel):
+    actions: List[QueuedActionModel] = Field(default_factory=list)
+    replace_queue: bool = False
+
+
+class EnqueueActionsResponse(BaseModel):
+    ok: bool
+    session_id: str
+    manual_mode: bool = True
+    enqueued_actions: int = 0
+    pending_action_batches: int = 0
+
+
+class LatestScreenshotResponse(BaseModel):
+    session_id: str
+    available: bool = False
+    screenshot_b64: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class FinishSessionResponse(BaseModel):
+    ok: bool
+    session_id: str
+    status: str = "DONE"

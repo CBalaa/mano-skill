@@ -8,7 +8,11 @@ from orchestrator.config import Settings, settings as default_settings
 from orchestrator.planner import PlannerOutcome, build_planner
 from orchestrator.schemas import (
     ActionModel,
+    EnqueueActionsRequest,
+    EnqueueActionsResponse,
+    FinishSessionResponse,
     GoNoResponse,
+    LatestScreenshotResponse,
     SessionCloseResponse,
     SessionCreateRequest,
     SessionCreateResponse,
@@ -61,6 +65,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         with session.lock:
             return _status_response(session)
 
+    @app.get("/v1/sessions/{session_id}/latest_screenshot", response_model=LatestScreenshotResponse)
+    def get_latest_screenshot(session_id: str):
+        session = _require_session(store, session_id)
+        with session.lock:
+            return LatestScreenshotResponse(
+                session_id=session.session_id,
+                available=bool(session.last_screenshot_b64),
+                screenshot_b64=session.last_screenshot_b64,
+                updated_at=session.last_screenshot_at.isoformat() if session.last_screenshot_at else None,
+            )
+
     @app.post("/v1/sessions/{session_id}/step", response_model=StepResponse)
     def step_session(session_id: str, request: StepRequest):
         session = _require_session(store, session_id)
@@ -74,6 +89,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return _call_user_response()
             if not session.last_screenshot_b64:
                 return _capture_screenshot_response()
+            manual_response = _manual_step_response(session)
+            if manual_response:
+                return manual_response
 
         outcome = planner.plan(session, request.tool_results)
 
@@ -90,6 +108,35 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             else:
                 session.status = outcome.status
             return _step_response_from_outcome(outcome)
+
+    @app.post("/v1/sessions/{session_id}/enqueue_actions", response_model=EnqueueActionsResponse)
+    def enqueue_actions(session_id: str, request: EnqueueActionsRequest):
+        session = _require_session(store, session_id)
+        _ensure_session_open(session)
+        queued_actions = [action.model_dump() for action in request.actions]
+        session = store.enqueue_actions(
+            session_id=session_id,
+            actions=queued_actions,
+            replace_queue=request.replace_queue,
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        with session.lock:
+            return EnqueueActionsResponse(
+                ok=True,
+                session_id=session_id,
+                enqueued_actions=len(queued_actions),
+                pending_action_batches=len(session.manual_action_batches),
+            )
+
+    @app.post("/v1/sessions/{session_id}/finish", response_model=FinishSessionResponse)
+    def finish_session(session_id: str):
+        session = _require_session(store, session_id)
+        _ensure_session_open(session)
+        session = store.finish_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return FinishSessionResponse(ok=True, session_id=session_id)
 
     @app.post("/v1/sessions/{session_id}/go_no", response_model=GoNoResponse)
     def go_no(session_id: str):
@@ -158,6 +205,8 @@ def _status_response(session: SessionRecord) -> SessionStatusResponse:
         awaiting_confirmation=session.awaiting_confirmation,
         stop_requested=session.stop_requested,
         closed=session.closed,
+        manual_mode=session.manual_mode,
+        pending_action_batches=len(session.manual_action_batches),
         has_screenshot=bool(session.last_screenshot_b64),
         task=session.task,
     )
@@ -202,6 +251,50 @@ def _call_user_response() -> StepResponse:
         reasoning="The planner requires explicit user confirmation before continuing.",
         action_desc="Waiting for user confirmation",
         actions=[],
+    )
+
+
+def _manual_step_response(session: SessionRecord) -> Optional[StepResponse]:
+    if not session.manual_mode:
+        return None
+
+    if session.manual_done:
+        session.status = "DONE"
+        session.touch()
+        return StepResponse(
+            status="DONE",
+            reasoning="The manual operator marked this session as complete.",
+            action_desc="Manual session finished",
+            actions=[],
+        )
+
+    if session.manual_action_batches:
+        actions = session.manual_action_batches.pop(0)
+        session.status = "RUNNING"
+        session.step_count += 1
+        session.touch()
+        return _step_response_from_outcome(
+            PlannerOutcome(
+                status="RUNNING",
+                reasoning="Dispatching a manually queued action batch.",
+                action_desc="Execute manually queued actions",
+                actions=actions,
+            )
+        )
+
+    session.status = "RUNNING"
+    session.touch()
+    return StepResponse(
+        status="RUNNING",
+        reasoning="Manual mode is enabled and the orchestrator is waiting for queued actions.",
+        action_desc="Wait for manual actions",
+        actions=[
+            ActionModel(
+                id=f"toolu_{uuid.uuid4().hex[:12]}",
+                name="computer",
+                input={"action": "wait"},
+            )
+        ],
     )
 
 
