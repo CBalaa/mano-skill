@@ -178,6 +178,7 @@ class OpenAIPlanner(BasePlanner):
         session.planner_state["last_openai_response_id"] = result.response_id
         session.planner_state["planner_backend"] = "responses"
         outcome = _normalize_outcome(payload)
+        outcome = _repair_explicit_url_task(session, tool_results=[], outcome=outcome)
         _record_planner_outcome(session, outcome)
         return outcome
 
@@ -222,6 +223,7 @@ class OpenAIPlanner(BasePlanner):
         session.planner_state["planner_backend"] = "chat_completions_vision"
         session.planner_state["last_screenshot_url"] = screenshot_url
         outcome = _normalize_outcome(payload)
+        outcome = _repair_explicit_url_task(session, tool_results=[], outcome=outcome)
         _record_planner_outcome(session, outcome)
         return outcome
 
@@ -369,6 +371,61 @@ def _record_planner_outcome(session: SessionRecord, outcome: PlannerOutcome):
     )
 
 
+def _repair_explicit_url_task(
+    session: SessionRecord,
+    tool_results: List[ToolResult],
+    outcome: PlannerOutcome,
+) -> PlannerOutcome:
+    if outcome.status == "RUNNING" and outcome.actions:
+        return outcome
+    if session.step_count > 0:
+        return outcome
+    if tool_results:
+        return outcome
+
+    url = _extract_first_url(session.task)
+    if not url:
+        return outcome
+    if not _looks_like_open_url_task(session.task):
+        return outcome
+
+    logger.warning(
+        "Planner returned no executable action for explicit URL task; synthesizing open_url for session=%s url=%s",
+        session.session_id,
+        url,
+    )
+    reasoning = outcome.reasoning or "The task explicitly asks to open a URL."
+    action_desc = outcome.action_desc or f"Open {url}"
+    return PlannerOutcome(
+        status="RUNNING",
+        reasoning=f"{reasoning} The orchestrator converted the explicit URL request into open_url.",
+        action_desc=action_desc,
+        actions=[{"name": "open_url", "input": {"url": url}}],
+    )
+
+
+def _extract_first_url(text: str) -> Optional[str]:
+    match = re.search(r"https?://[^\s\"'<>]+", text, re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(0)
+
+
+def _looks_like_open_url_task(task: str) -> bool:
+    lowered = task.casefold()
+    hints = [
+        "open browser",
+        "visit ",
+        "open ",
+        "打开浏览器",
+        "访问",
+        "打开网页",
+        "打开网站",
+        "打开链接",
+    ]
+    return any(hint in lowered for hint in hints)
+
+
 def _stream_chat_completion(
     *,
     base_url: str,
@@ -382,6 +439,8 @@ def _stream_chat_completion(
     payload = {
         "model": model,
         "stream": True,
+        "temperature": 0,
+        "top_p": 1,
         "messages": messages,
         "response_format": response_format,
     }
@@ -428,6 +487,8 @@ def _build_responses_payload(
 ) -> Dict[str, Any]:
     return {
         "model": model,
+        "temperature": 0,
+        "top_p": 1,
         "instructions": PLANNER_SYSTEM_PROMPT,
         "input": [
             {

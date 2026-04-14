@@ -7,10 +7,12 @@ from orchestrator.config import Settings
 from orchestrator.planner import (
     PLANNER_SYSTEM_PROMPT,
     _build_responses_payload,
+    _repair_explicit_url_task,
     build_planner,
     _normalize_outcome,
     _parse_responses_stream,
 )
+from orchestrator.session_store import SessionRecord
 
 
 def build_test_client():
@@ -41,6 +43,8 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(payload["instructions"], PLANNER_SYSTEM_PROMPT)
         self.assertTrue(payload["stream"])
+        self.assertEqual(payload["temperature"], 0)
+        self.assertEqual(payload["top_p"], 1)
         self.assertEqual(payload["text"]["format"]["type"], "json_schema")
         content = payload["input"][0]["content"]
         self.assertEqual(content[0]["text"], "<image>")
@@ -116,6 +120,30 @@ class OrchestratorTests(unittest.TestCase):
                     {"name": "open_url", "input_json": '{"url":"https://example.com"}'},
                 ],
             }
+        )
+
+        self.assertEqual(outcome.status, "RUNNING")
+        self.assertEqual(outcome.actions, [{"name": "open_url", "input": {"url": "https://example.com"}}])
+
+    def test_repair_explicit_url_task_synthesizes_open_url_on_first_step(self):
+        session = SessionRecord(
+            session_id="session-url",
+            device_id="device-url",
+            platform="Windows",
+            task="打开浏览器并访问 https://example.com",
+            expected_result=None,
+        )
+        outcome = _repair_explicit_url_task(
+            session=session,
+            tool_results=[],
+            outcome=_normalize_outcome(
+                {
+                    "status": "DONE",
+                    "reasoning": "The user wants the page opened.",
+                    "action_desc": "Open the page.",
+                    "actions": [],
+                }
+            ),
         )
 
         self.assertEqual(outcome.status, "RUNNING")
