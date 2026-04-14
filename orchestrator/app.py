@@ -1,8 +1,9 @@
 import logging
+import base64
 import uuid
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 
 from orchestrator.config import Settings, settings as default_settings
 from orchestrator.planner import PlannerOutcome, build_planner
@@ -75,6 +76,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 screenshot_b64=session.last_screenshot_b64,
                 updated_at=session.last_screenshot_at.isoformat() if session.last_screenshot_at else None,
             )
+
+    @app.get("/v1/sessions/{session_id}/latest_screenshot.png")
+    def get_latest_screenshot_png(session_id: str):
+        session = _require_session(store, session_id)
+        with session.lock:
+            if not session.last_screenshot_b64:
+                raise HTTPException(status_code=404, detail="No screenshot available")
+            try:
+                png_bytes = base64.b64decode(session.last_screenshot_b64)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail="Stored screenshot is invalid") from exc
+        return Response(content=png_bytes, media_type="image/png")
 
     @app.post("/v1/sessions/{session_id}/step", response_model=StepResponse)
     def step_session(session_id: str, request: StepRequest):

@@ -4,6 +4,12 @@ from fastapi.testclient import TestClient
 
 from orchestrator.app import create_app
 from orchestrator.config import Settings
+from orchestrator.planner import (
+    PLANNER_SYSTEM_PROMPT,
+    _build_responses_payload,
+    _normalize_outcome,
+    _parse_responses_stream,
+)
 
 
 def build_test_client():
@@ -14,6 +20,7 @@ def build_test_client():
             planner_mode="mock",
             openai_api_key="",
             openai_base_url="",
+            public_base_url="",
             openai_model="gpt-5.4",
             openai_reasoning_effort="medium",
             openai_timeout=30.0,
@@ -23,6 +30,59 @@ def build_test_client():
 
 
 class OrchestratorTests(unittest.TestCase):
+    def test_responses_payload_matches_codex_image_shape(self):
+        payload = _build_responses_payload(
+            model="gpt-5.4",
+            reasoning_effort="medium",
+            user_text="Task: click the button",
+            screenshot_b64="QUJD",
+        )
+
+        self.assertEqual(payload["instructions"], PLANNER_SYSTEM_PROMPT)
+        self.assertTrue(payload["stream"])
+        self.assertEqual(payload["text"]["format"]["type"], "json_schema")
+        content = payload["input"][0]["content"]
+        self.assertEqual(content[0]["text"], "<image>")
+        self.assertEqual(content[1]["type"], "input_image")
+        self.assertEqual(content[1]["image_url"], "data:image/png;base64,QUJD")
+        self.assertEqual(content[2]["text"], "</image>")
+        self.assertEqual(content[3]["text"], "Task: click the button")
+
+    def test_parse_responses_stream_collects_text_and_response_id(self):
+        result = _parse_responses_stream(
+            [
+                'event: response.created',
+                'data: {"type":"response.created","response":{"id":"resp_123","error":null}}',
+                "",
+                'event: response.output_text.delta',
+                'data: {"type":"response.output_text.delta","delta":"{\\"status\\":"}',
+                'data: {"type":"response.output_text.delta","delta":"\\"DONE\\"}"}',
+                'event: response.completed',
+                'data: {"type":"response.completed","response":{"id":"resp_123","error":null}}',
+            ]
+        )
+
+        self.assertEqual(result.response_id, "resp_123")
+        self.assertEqual(result.text, '{"status":"DONE"}')
+
+    def test_normalize_outcome_parses_input_json(self):
+        outcome = _normalize_outcome(
+            {
+                "status": "RUNNING",
+                "reasoning": "continue",
+                "action_desc": "wait",
+                "actions": [
+                    {
+                        "name": "computer",
+                        "input_json": '{"action":"wait"}',
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(outcome.status, "RUNNING")
+        self.assertEqual(outcome.actions, [{"name": "computer", "input": {"action": "wait"}}])
+
     def test_step_bootstraps_with_screenshot_then_finishes(self):
         client = build_test_client()
         created = client.post(

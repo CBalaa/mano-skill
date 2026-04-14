@@ -2,8 +2,9 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
+import requests
 from orchestrator.config import Settings
 from orchestrator.schemas import ToolResult
 from orchestrator.session_store import SessionRecord
@@ -31,12 +32,9 @@ PLANNER_OUTPUT_SCHEMA = {
                         "type": "string",
                         "enum": ["computer", "open_app", "open_url", "minimize_panel"],
                     },
-                    "input": {
-                        "type": "object",
-                        "additionalProperties": True,
-                    },
+                    "input_json": {"type": "string"},
                 },
-                "required": ["name", "input"],
+                "required": ["name", "input_json"],
             },
         },
     },
@@ -54,6 +52,7 @@ Rules:
 - Prefer the existing action protocol. Common actions use name="computer" with input.action in:
   left_click, double_click, right_click, mouse_move, type, key, scroll, left_click_drag, wait, screenshot, done, fail, call_user.
 - open_app and open_url use their own tool names.
+- Each action must return `input_json` as a compact JSON object string, for example `{"action":"wait"}`.
 - Coordinates must target the 1280x720 screenshot space.
 - Use CALL_USER for destructive, irreversible, credential, payment, or ambiguous operations.
 - Keep reasoning concise and factual.
@@ -87,6 +86,12 @@ class PlannerOutcome:
     reasoning: str
     action_desc: str
     actions: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class StreamedResponsesResult:
+    text: str
+    response_id: Optional[str] = None
 
 
 class BasePlanner:
@@ -126,16 +131,7 @@ class MockPlanner(BasePlanner):
 
 class OpenAIPlanner(BasePlanner):
     def __init__(self, settings: Settings):
-        from openai import OpenAI
-
         self._settings = settings
-        client_kwargs = {
-            "api_key": settings.openai_api_key,
-            "timeout": settings.openai_timeout,
-        }
-        if settings.openai_base_url:
-            client_kwargs["base_url"] = settings.openai_base_url
-        self._client = OpenAI(**client_kwargs)
 
     def plan(self, session: SessionRecord, tool_results: List[ToolResult]) -> PlannerOutcome:
         if not session.last_screenshot_b64:
@@ -147,40 +143,72 @@ class OpenAIPlanner(BasePlanner):
             )
 
         user_text = _build_user_prompt(session, tool_results)
-        response = self._client.responses.create(
+        try:
+            return self._plan_with_responses_api(session, user_text)
+        except Exception as exc:
+            if not self._settings.public_base_url:
+                raise
+            logger.warning("Responses API planner failed, trying chat.completions vision fallback: %s", exc)
+            return self._plan_with_chat_completions_vision(session, user_text)
+
+    def _plan_with_responses_api(self, session: SessionRecord, user_text: str) -> PlannerOutcome:
+        payload = _build_responses_payload(
             model=self._settings.openai_model,
-            reasoning={"effort": self._settings.openai_reasoning_effort},
-            input=[
+            reasoning_effort=self._settings.openai_reasoning_effort,
+            user_text=user_text,
+            screenshot_b64=session.last_screenshot_b64,
+        )
+        result = _stream_responses_request(
+            base_url=self._settings.openai_base_url,
+            api_key=self._settings.openai_api_key,
+            timeout=self._settings.openai_timeout,
+            payload=payload,
+        )
+        payload = json.loads(result.text)
+        session.planner_state["last_openai_response_id"] = result.response_id
+        session.planner_state["planner_backend"] = "responses"
+        return _normalize_outcome(payload)
+
+    def _plan_with_chat_completions_vision(self, session: SessionRecord, user_text: str) -> PlannerOutcome:
+        if not self._settings.openai_base_url:
+            raise RuntimeError("Vision fallback requires MANO_OPENAI_BASE_URL or OPENAI_BASE_URL")
+
+        screenshot_url = (
+            f"{self._settings.public_base_url}/v1/sessions/{session.session_id}/latest_screenshot.png"
+        )
+        response_text = _stream_chat_completion(
+            base_url=self._settings.openai_base_url,
+            api_key=self._settings.openai_api_key,
+            model=self._settings.openai_model,
+            timeout=self._settings.openai_timeout,
+            messages=[
                 {
                     "role": "system",
-                    "content": [{"type": "input_text", "text": PLANNER_SYSTEM_PROMPT}],
+                    "content": (
+                        PLANNER_SYSTEM_PROMPT
+                        + "\nReturn only JSON that matches the provided schema."
+                    ),
                 },
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": user_text},
-                        {
-                            "type": "input_image",
-                            "image_url": f"data:image/png;base64,{session.last_screenshot_b64}",
-                        },
+                        {"type": "text", "text": user_text},
+                        {"type": "image_url", "image_url": {"url": screenshot_url}},
                     ],
                 },
             ],
-            text={
-                "format": {
-                    "type": "json_schema",
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
                     "name": "planner_response",
                     "schema": PLANNER_OUTPUT_SCHEMA,
                     "strict": True,
-                }
+                },
             },
         )
-        output_text = getattr(response, "output_text", "") or ""
-        if not output_text:
-            raise RuntimeError("Responses API returned no output_text")
-
-        payload = json.loads(output_text)
-        session.planner_state["last_openai_response_id"] = getattr(response, "id", None)
+        payload = json.loads(response_text)
+        session.planner_state["planner_backend"] = "chat_completions_vision"
+        session.planner_state["last_screenshot_url"] = screenshot_url
         return _normalize_outcome(payload)
 
 
@@ -269,6 +297,14 @@ def _normalize_outcome(payload: Dict[str, Any]) -> PlannerOutcome:
         action_input = action.get("input")
         if not isinstance(action_input, dict):
             action_input = {}
+        input_json = action.get("input_json")
+        if isinstance(input_json, str) and input_json.strip():
+            try:
+                parsed_input = json.loads(input_json)
+            except json.JSONDecodeError:
+                parsed_input = {}
+            if isinstance(parsed_input, dict):
+                action_input = parsed_input
         if name not in {"computer", "open_app", "open_url", "minimize_panel"}:
             continue
         normalized_actions.append({"name": name, "input": action_input})
@@ -286,3 +322,167 @@ def _normalize_outcome(payload: Dict[str, Any]) -> PlannerOutcome:
         action_desc=action_desc,
         actions=normalized_actions,
     )
+
+
+def _stream_chat_completion(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float,
+    messages: List[Dict[str, Any]],
+    response_format: Dict[str, Any],
+) -> str:
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": model,
+        "stream": True,
+        "messages": messages,
+        "response_format": response_format,
+    }
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+        stream=True,
+    )
+    response.raise_for_status()
+
+    parts: List[str] = []
+    for raw_line in response.iter_lines(decode_unicode=True):
+        if not raw_line:
+            continue
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        chunk = json.loads(data)
+        error = chunk.get("error")
+        if error:
+            raise RuntimeError(error.get("message") or "chat.completions returned an error")
+        for choice in chunk.get("choices", []):
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if content:
+                parts.append(content)
+
+    text = "".join(parts).strip()
+    if not text:
+        raise RuntimeError("chat.completions returned no content")
+    return text
+
+
+def _build_responses_payload(
+    *,
+    model: str,
+    reasoning_effort: str,
+    user_text: str,
+    screenshot_b64: str,
+) -> Dict[str, Any]:
+    return {
+        "model": model,
+        "instructions": PLANNER_SYSTEM_PROMPT,
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "<image>"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{screenshot_b64}",
+                    },
+                    {"type": "input_text", "text": "</image>"},
+                    {"type": "input_text", "text": user_text},
+                ],
+            }
+        ],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "reasoning": {"effort": reasoning_effort},
+        "store": False,
+        "stream": True,
+        "include": [],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "planner_response",
+                "schema": PLANNER_OUTPUT_SCHEMA,
+                "strict": True,
+            }
+        },
+    }
+
+
+def _default_responses_base_url(base_url: str) -> str:
+    return (base_url or "https://api.openai.com/v1").rstrip("/")
+
+
+def _stream_responses_request(
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    payload: Dict[str, Any],
+) -> StreamedResponsesResult:
+    url = f"{_default_responses_base_url(base_url)}/responses"
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        json=payload,
+        timeout=timeout,
+        stream=True,
+    )
+    response.raise_for_status()
+    return _parse_responses_stream(response.iter_lines(decode_unicode=True))
+
+
+def _parse_responses_stream(lines: Iterable[str]) -> StreamedResponsesResult:
+    response_id = None
+    parts: List[str] = []
+
+    for raw_line in lines:
+        if not raw_line:
+            continue
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+
+        chunk = json.loads(data)
+        error = chunk.get("error")
+        if error:
+            raise RuntimeError(error.get("message") or "responses API returned an error")
+
+        response_obj = chunk.get("response")
+        if isinstance(response_obj, dict):
+            response_id = response_obj.get("id") or response_id
+            response_error = response_obj.get("error")
+            if response_error:
+                if isinstance(response_error, dict):
+                    raise RuntimeError(response_error.get("message") or "responses API returned an error")
+                raise RuntimeError(str(response_error))
+
+        chunk_type = chunk.get("type")
+        if chunk_type == "response.output_text.delta":
+            delta = chunk.get("delta")
+            if delta:
+                parts.append(delta)
+
+    text = "".join(parts).strip()
+    if not text:
+        raise RuntimeError("responses API returned no output text")
+    return StreamedResponsesResult(text=text, response_id=response_id)
