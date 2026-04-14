@@ -106,7 +106,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if manual_response:
                 return manual_response
 
-        outcome = planner.plan(session, request.tool_results)
+        try:
+            outcome = app.state.planner.plan(session, request.tool_results)
+        except Exception as exc:
+            logger.exception("Planner step failed for session %s: %s", session_id, exc)
+            outcome = PlannerOutcome(
+                status="FAIL",
+                reasoning=f"Planner failed: {type(exc).__name__}: {exc}",
+                action_desc="Planner request failed",
+                actions=[],
+            )
 
         with session.lock:
             if session.stop_requested:

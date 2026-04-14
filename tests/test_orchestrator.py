@@ -7,6 +7,7 @@ from orchestrator.config import Settings
 from orchestrator.planner import (
     PLANNER_SYSTEM_PROMPT,
     _build_responses_payload,
+    build_planner,
     _normalize_outcome,
     _parse_responses_stream,
 )
@@ -56,7 +57,10 @@ class OrchestratorTests(unittest.TestCase):
                 "",
                 'event: response.output_text.delta',
                 'data: {"type":"response.output_text.delta","delta":"{\\"status\\":"}',
+                "",
+                'event: response.output_text.delta',
                 'data: {"type":"response.output_text.delta","delta":"\\"DONE\\"}"}',
+                "",
                 'event: response.completed',
                 'data: {"type":"response.completed","response":{"id":"resp_123","error":null}}',
             ]
@@ -64,6 +68,24 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(result.response_id, "resp_123")
         self.assertEqual(result.text, '{"status":"DONE"}')
+
+    def test_parse_responses_stream_handles_split_json_across_data_lines(self):
+        result = _parse_responses_stream(
+            [
+                "event: response.created",
+                'data: {"type":"response.created","response":{"id":"resp_456","error":null}}',
+                "",
+                "event: response.output_text.delta",
+                'data: {"type":"response.output_text.delta","delta":"{\\"st',
+                'data: atus\\":\\"RUNNING\\"}"}',
+                "",
+                "event: response.completed",
+                'data: {"type":"response.completed","response":{"id":"resp_456","error":null}}',
+            ]
+        )
+
+        self.assertEqual(result.response_id, "resp_456")
+        self.assertEqual(result.text, '{"status":"RUNNING"}')
 
     def test_normalize_outcome_parses_input_json(self):
         outcome = _normalize_outcome(
@@ -82,6 +104,39 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(outcome.status, "RUNNING")
         self.assertEqual(outcome.actions, [{"name": "computer", "input": {"action": "wait"}}])
+
+    def test_normalize_outcome_coerces_done_with_actions_to_running(self):
+        outcome = _normalize_outcome(
+            {
+                "status": "DONE",
+                "reasoning": "Open the website now.",
+                "action_desc": "Open browser",
+                "actions": [
+                    {"name": "computer", "input_json": "{}"},
+                    {"name": "open_url", "input_json": '{"url":"https://example.com"}'},
+                ],
+            }
+        )
+
+        self.assertEqual(outcome.status, "RUNNING")
+        self.assertEqual(outcome.actions, [{"name": "open_url", "input": {"url": "https://example.com"}}])
+
+    def test_build_planner_openai_mode_uses_real_planner(self):
+        planner = build_planner(
+            Settings(
+                host="127.0.0.1",
+                port=8000,
+                planner_mode="openai",
+                openai_api_key="test-key",
+                openai_base_url="https://example.invalid/v1",
+                public_base_url="",
+                openai_model="gpt-5.4",
+                openai_reasoning_effort="low",
+                openai_timeout=30.0,
+            )
+        )
+
+        self.assertEqual(type(planner).__name__, "OpenAIPlanner")
 
     def test_step_bootstraps_with_screenshot_then_finishes(self):
         client = build_test_client()
@@ -248,6 +303,53 @@ class OrchestratorTests(unittest.TestCase):
 
         go_no_after_close = client.post(f"/v1/sessions/{session_id}/go_no")
         self.assertEqual(go_no_after_close.status_code, 410)
+
+    def test_step_returns_fail_when_planner_raises(self):
+        client = build_test_client()
+
+        class BrokenPlanner:
+            def plan(self, session, tool_results):
+                raise RuntimeError("boom")
+
+        client.app.state.planner = BrokenPlanner()
+
+        created = client.post(
+            "/v1/sessions",
+            json={
+                "task": "Open a website",
+                "device_id": "device-broken-planner",
+                "platform": "Windows",
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        session_id = created.json()["session_id"]
+
+        first_step = client.post(
+            f"/v1/sessions/{session_id}/step",
+            json={"request_id": "req-1", "tool_results": []},
+        )
+        self.assertEqual(first_step.status_code, 200)
+        self.assertEqual(first_step.json()["actions"][0]["input"]["action"], "screenshot")
+
+        second_step = client.post(
+            f"/v1/sessions/{session_id}/step",
+            json={
+                "request_id": "req-2",
+                "tool_results": [
+                    {
+                        "tool_use_id": "toolu_1",
+                        "status": "success",
+                        "output": "screenshot requested",
+                        "include_screenshot": True,
+                        "screenshot_b64": "ZmFrZQ==",
+                        "meta": {"action": "screenshot"},
+                    }
+                ],
+            },
+        )
+        self.assertEqual(second_step.status_code, 200)
+        self.assertEqual(second_step.json()["status"], "FAIL")
+        self.assertIn("Planner failed", second_step.json()["reasoning"])
 
     def test_manual_mode_waits_for_server_actions_and_can_finish(self):
         client = build_test_client()

@@ -49,6 +49,7 @@ Decide exactly one next step based on the latest screenshot and recent tool resu
 Rules:
 - Return status RUNNING, DONE, FAIL, or CALL_USER.
 - When status is RUNNING, return 1-3 actions. When status is DONE, FAIL, or CALL_USER, return an empty actions list.
+- If you include any action at all, status MUST be RUNNING.
 - Prefer the existing action protocol. Common actions use name="computer" with input.action in:
   left_click, double_click, right_click, mouse_move, type, key, scroll, left_click_drag, wait, screenshot, done, fail, call_user.
 - open_app and open_url use their own tool names.
@@ -56,6 +57,9 @@ Rules:
 - Coordinates must target the 1280x720 screenshot space.
 - Use CALL_USER for destructive, irreversible, credential, payment, or ambiguous operations.
 - Keep reasoning concise and factual.
+- The screenshot is the source of truth. Do not infer that an app or website is already open just because terminal text or logs mention it.
+- If the task says to open a browser or visit a URL and that page is not visibly open yet, prefer a single open_url action instead of waiting.
+- If the task says to open an app and the app is not visibly open yet, prefer open_app instead of waiting.
 - Do not ask for another screenshot unless you genuinely need a fresh one after a visible state change.
 """
 
@@ -92,6 +96,12 @@ class PlannerOutcome:
 class StreamedResponsesResult:
     text: str
     response_id: Optional[str] = None
+
+
+@dataclass
+class SSEEvent:
+    event: Optional[str]
+    data_lines: List[str] = field(default_factory=list)
 
 
 class BasePlanner:
@@ -167,7 +177,9 @@ class OpenAIPlanner(BasePlanner):
         payload = json.loads(result.text)
         session.planner_state["last_openai_response_id"] = result.response_id
         session.planner_state["planner_backend"] = "responses"
-        return _normalize_outcome(payload)
+        outcome = _normalize_outcome(payload)
+        _record_planner_outcome(session, outcome)
+        return outcome
 
     def _plan_with_chat_completions_vision(self, session: SessionRecord, user_text: str) -> PlannerOutcome:
         if not self._settings.openai_base_url:
@@ -209,20 +221,9 @@ class OpenAIPlanner(BasePlanner):
         payload = json.loads(response_text)
         session.planner_state["planner_backend"] = "chat_completions_vision"
         session.planner_state["last_screenshot_url"] = screenshot_url
-        return _normalize_outcome(payload)
-
-
-class FallbackPlanner(BasePlanner):
-    def __init__(self, primary: BasePlanner, fallback: BasePlanner):
-        self._primary = primary
-        self._fallback = fallback
-
-    def plan(self, session: SessionRecord, tool_results: List[ToolResult]) -> PlannerOutcome:
-        try:
-            return self._primary.plan(session, tool_results)
-        except Exception as exc:
-            logger.exception("Primary planner failed, falling back to mock planner: %s", exc)
-            return self._fallback.plan(session, tool_results)
+        outcome = _normalize_outcome(payload)
+        _record_planner_outcome(session, outcome)
+        return outcome
 
 
 def build_planner(settings: Settings) -> BasePlanner:
@@ -234,11 +235,10 @@ def build_planner(settings: Settings) -> BasePlanner:
         return mock
     if settings.planner_mode == "openai" or settings.openai_enabled:
         try:
-            primary = OpenAIPlanner(settings)
+            return OpenAIPlanner(settings)
         except Exception as exc:
             logger.warning("OpenAI planner unavailable, using mock planner instead: %s", exc)
             return mock
-        return FallbackPlanner(primary, mock)
     return mock
 
 
@@ -286,9 +286,6 @@ def _normalize_outcome(payload: Dict[str, Any]) -> PlannerOutcome:
         action_desc = action_desc or "Planner failed"
         actions = []
 
-    if status != "RUNNING":
-        actions = []
-
     normalized_actions = []
     for action in actions:
         if not isinstance(action, dict):
@@ -307,7 +304,39 @@ def _normalize_outcome(payload: Dict[str, Any]) -> PlannerOutcome:
                 action_input = parsed_input
         if name not in {"computer", "open_app", "open_url", "minimize_panel"}:
             continue
+        if name == "computer":
+            action_name = str(action_input.get("action") or "").strip()
+            if action_name not in {
+                "left_click",
+                "double_click",
+                "right_click",
+                "mouse_move",
+                "type",
+                "key",
+                "scroll",
+                "left_click_drag",
+                "wait",
+                "screenshot",
+                "done",
+                "fail",
+                "call_user",
+            }:
+                continue
+        elif name == "open_app":
+            if not str(action_input.get("app_name") or "").strip():
+                continue
+        elif name == "open_url":
+            if not str(action_input.get("url") or "").strip():
+                continue
         normalized_actions.append({"name": name, "input": action_input})
+
+    if status != "RUNNING" and normalized_actions:
+        logger.warning(
+            "Planner returned status=%s with %d valid actions; coercing status to RUNNING",
+            status,
+            len(normalized_actions),
+        )
+        status = "RUNNING"
 
     if status == "RUNNING" and not normalized_actions:
         normalized_actions = [{"name": "computer", "input": {"action": "wait"}}]
@@ -321,6 +350,22 @@ def _normalize_outcome(payload: Dict[str, Any]) -> PlannerOutcome:
         reasoning=reasoning,
         action_desc=action_desc,
         actions=normalized_actions,
+    )
+
+
+def _record_planner_outcome(session: SessionRecord, outcome: PlannerOutcome):
+    session.planner_state["last_planner_status"] = outcome.status
+    session.planner_state["last_planner_reasoning"] = outcome.reasoning
+    session.planner_state["last_planner_action_desc"] = outcome.action_desc
+    session.planner_state["last_planner_actions"] = outcome.actions
+    logger.info(
+        "Planner outcome session=%s backend=%s status=%s actions=%d action_desc=%s reasoning=%s",
+        session.session_id,
+        session.planner_state.get("planner_backend", "unknown"),
+        outcome.status,
+        len(outcome.actions),
+        outcome.action_desc,
+        outcome.reasoning,
     )
 
 
@@ -351,18 +396,14 @@ def _stream_chat_completion(
         stream=True,
     )
     response.raise_for_status()
+    response.encoding = "utf-8"
 
     parts: List[str] = []
-    for raw_line in response.iter_lines(decode_unicode=True):
-        if not raw_line:
-            continue
-        line = raw_line.strip()
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if data == "[DONE]":
+    for sse_event in _iter_sse_events(response.iter_lines(decode_unicode=True)):
+        data = _coalesce_sse_data(sse_event.data_lines)
+        if not data or data == "[DONE]":
             break
-        chunk = json.loads(data)
+        chunk = _loads_sse_json(sse_event)
         error = chunk.get("error")
         if error:
             raise RuntimeError(error.get("message") or "chat.completions returned an error")
@@ -445,6 +486,7 @@ def _stream_responses_request(
         stream=True,
     )
     response.raise_for_status()
+    response.encoding = "utf-8"
     return _parse_responses_stream(response.iter_lines(decode_unicode=True))
 
 
@@ -452,17 +494,12 @@ def _parse_responses_stream(lines: Iterable[str]) -> StreamedResponsesResult:
     response_id = None
     parts: List[str] = []
 
-    for raw_line in lines:
-        if not raw_line:
-            continue
-        line = raw_line.strip()
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
+    for sse_event in _iter_sse_events(lines):
+        data = _coalesce_sse_data(sse_event.data_lines)
         if not data or data == "[DONE]":
             continue
 
-        chunk = json.loads(data)
+        chunk = _loads_sse_json(sse_event)
         error = chunk.get("error")
         if error:
             raise RuntimeError(error.get("message") or "responses API returned an error")
@@ -486,3 +523,77 @@ def _parse_responses_stream(lines: Iterable[str]) -> StreamedResponsesResult:
     if not text:
         raise RuntimeError("responses API returned no output text")
     return StreamedResponsesResult(text=text, response_id=response_id)
+
+
+def _iter_sse_events(lines: Iterable[str]) -> Iterable[SSEEvent]:
+    event_name: Optional[str] = None
+    data_lines: List[str] = []
+
+    for raw_line in lines:
+        if raw_line is None:
+            continue
+        line = raw_line.rstrip("\r\n")
+
+        if line == "":
+            if event_name is not None or data_lines:
+                yield SSEEvent(event=event_name, data_lines=data_lines)
+            event_name = None
+            data_lines = []
+            continue
+
+        if line.startswith(":"):
+            continue
+
+        field, sep, value = line.partition(":")
+        if not sep:
+            if data_lines:
+                data_lines.append(line)
+            continue
+        if value.startswith(" "):
+            value = value[1:]
+
+        if field == "event":
+            if event_name is not None or data_lines:
+                yield SSEEvent(event=event_name, data_lines=data_lines)
+                data_lines = []
+            event_name = value
+        elif field == "data":
+            data_lines.append(value)
+
+    if event_name is not None or data_lines:
+        yield SSEEvent(event=event_name, data_lines=data_lines)
+
+
+def _coalesce_sse_data(data_lines: List[str]) -> str:
+    if not data_lines:
+        return ""
+    return "\n".join(data_lines).strip()
+
+
+def _loads_sse_json(sse_event: SSEEvent) -> Dict[str, Any]:
+    candidates: List[str] = []
+    joined_with_newlines = _coalesce_sse_data(sse_event.data_lines)
+    if joined_with_newlines:
+        candidates.append(joined_with_newlines)
+
+    joined_without_newlines = "".join(sse_event.data_lines).strip()
+    if joined_without_newlines and joined_without_newlines not in candidates:
+        candidates.append(joined_without_newlines)
+
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        if candidate == "[DONE]":
+            return {"type": "[DONE]"}
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(payload, dict):
+            return payload
+        raise RuntimeError("responses stream yielded a non-object JSON payload")
+
+    preview = (candidates[-1] if candidates else "")[:200]
+    raise RuntimeError(
+        f"Failed to decode SSE JSON event {sse_event.event or '<unknown>'}: {last_error}. Preview: {preview!r}"
+    )
